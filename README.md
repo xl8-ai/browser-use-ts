@@ -6,7 +6,7 @@ This is a TypeScript port of the [browser-use](https://github.com/browser-use/br
 
 ## About
 
-This TypeScript port was created as part of an initiative by Vadavision. The goal is to provide the same functionality as the original Python library in a TypeScript/JavaScript environment.
+This TypeScript port was created as part of an initiative by [Vadavision](https://www.vadavision.com). The goal is to provide the same functionality as the original Python library in a TypeScript/JavaScript environment.
 
 ## Project Structure
 
@@ -120,5 +120,4 @@ This project is licensed under the same license as the original browser-use proj
 ## Acknowledgements
 
 - Original [browser-use](https://github.com/browser-use/browser-use) creators for the Python implementation
-- Pankil Joshi for the TypeScript port
-- Vadavision for supporting the initiative
+- [Vadavision](https://www.vadavision.com) for supporting the initiative
