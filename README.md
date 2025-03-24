@@ -40,44 +40,6 @@ browser-use-ts/
 - Node.js (v16 or higher)
 - npm (v7 or higher)
 
-### Installation
-
-# From GitHub
-npm install github:vadavision/browser-use-ts
-```
-
-### Basic Usage
-
-```typescript
-
-async function runExample() {
-  // Define the task for the agent
-  const task = 'Visit example.com and extract the main heading';
-
-  // Create a browser instance with configuration
-  const browser = new Browser(new BrowserConfig({
-    headless: false, // Set to true for production use
-    disableSecurity: true // Useful for development
-  }));
-
-  // Create the agent with OpenAI integration
-  const agent = new Agent(
-    task,
-    new ChatOpenAI({
-      openAIApiKey: OPENAI_API_KEY,
-      modelName: 'gpt-4o',
-      temperature: 0.0,
-    }),
-  );
-
-  // Run the agent
-  await agent.run();
-}
-
-// Run the example
-runExample().catch(console.error);
-```
-
 ### Running Examples
 
 The repository includes several examples to help you get started:
