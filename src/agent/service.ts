@@ -6,62 +6,109 @@ import { BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 
 // Project imports
-import { 
-  ActionResult, 
-  AgentError, 
-  AgentHistory, 
-  AgentHistoryList, 
-  AgentOutput, 
-  AgentSettings, 
-  AgentState, 
-  AgentStepInfo, 
+import {
+  ActionResult,
+  AgentError,
+  AgentHistory,
+  AgentHistoryList,
+  AgentOutput,
+  AgentSettings,
+  AgentState,
+  AgentStepInfo,
   DoneAgentOutput,
   StepMetadata,
-  ToolCallingMethod
-} from './views';
+  ToolCallingMethod,
+} from "./views";
 // Removed Zod import as we're using TypeScript interfaces for validation
-import { ActionModel } from '../controller/registry/views';
+import { ActionModel } from "../controller/registry/views";
 // import type { Context } from '../controller/types';
-import { Controller } from '../controller/service';
-import { Browser } from '../browser/browser';
-import { BrowserContextConfig } from '../browser/context';
-import { BrowserContext } from '../browser/context';
-import { BrowserState, BrowserStateHistory } from '../browser/views';
+import { Controller } from "../controller/service";
+import { Browser } from "../browser/browser";
+import { BrowserContextConfig } from "../browser/context";
+import { BrowserContext } from "../browser/context";
+import { BrowserState, BrowserStateHistory } from "../browser/views";
 // @ts-ignore - Used for type assertions
-import { DOMElementNode, ElementHash } from '../dom/types';
-import { MessageManager, MessageManagerSettings } from './message_manager/service';
-import { SystemPrompt, PlannerPrompt } from './prompts';
-import { convertInputMessages, extractJsonFromModelOutput, saveConversation } from './message_manager/utils';
+import { DOMElementNode, ElementHash } from "../dom/types";
+import {
+  MessageManager,
+  MessageManagerSettings,
+} from "./message_manager/service";
+import { SystemPrompt, PlannerPrompt } from "./prompts";
+import {
+  convertInputMessages,
+  extractJsonFromModelOutput,
+  saveConversation,
+} from "./message_manager/utils";
 // We don't need to import DOMHistoryElement from dom/views.ts anymore
 // since we're using 'any' type for interactedElements to match Python's duck typing behavior
 // import { HistoryTreeProcessor } from '../dom/history_tree_processor/service';
 
 /**
+ * Options for the Agent constructor.
+ */
+export interface AgentConstructorOptions<Context = any> {
+  context?: Context;
+  injectedAgentState?: AgentState;
+  plannerInterval?: number;
+  plannerLlm?: BaseChatModel;
+  pageExtractionLlm?: BaseChatModel;
+  toolCallingMethod?: ToolCallingMethod;
+  includeAttributes?: string[];
+  maxActionsPerStep?: number;
+  availableFilePaths?: string[];
+  generateGif?: boolean | string;
+  messageContext?: string;
+  validateOutput?: boolean;
+  maxInputTokens?: number;
+  extendSystemMessage?: string;
+  overrideSystemMessage?: string;
+  retryDelay?: number;
+  maxFailures?: number;
+  saveConversationPathEncoding?: string;
+  saveConversationPath?: string;
+  useVisionForPlanner?: boolean;
+  useVision?: boolean;
+  registerExternalAgentStatusRaiseErrorCallback?: () => Promise<boolean>;
+  registerNewStepCallback?: (
+    state: BrowserState,
+    modelOutput: AgentOutput,
+    step: number
+  ) => Promise<void>;
+  registerDoneCallback?: (history: AgentHistoryList) => Promise<void>;
+  initialActions?: Record<string, Record<string, any>>[];
+  sensitiveData?: Record<string, string>;
+  controller?: Controller<Context>;
+  browserContext?: BrowserContext;
+  browser?: Browser;
+}
+
+/**
  * Utility function to log the model's response
  */
 function logResponse(response: AgentOutput): void {
-  let emoji = '🤷';
-  
+  let emoji = "🤷";
+
   // Check if currentState and its properties exist before accessing them
   if (response.currentState) {
     // In the Python implementation, these are in AgentBrain which is used in currentState
-    const evaluationPreviousGoal = response.currentState.evaluationPreviousGoal || '';
-    const memory = response.currentState.memory || '';
-    const nextGoal = response.currentState.nextGoal || '';
-    
-    if (evaluationPreviousGoal.includes('Success')) {
-      emoji = '👍';
-    } else if (evaluationPreviousGoal.includes('Failed')) {
-      emoji = '⚠';
+    const evaluationPreviousGoal =
+      response.currentState.evaluationPreviousGoal || "";
+    const memory = response.currentState.memory || "";
+    const nextGoal = response.currentState.nextGoal || "";
+
+    if (evaluationPreviousGoal.includes("Success")) {
+      emoji = "👍";
+    } else if (evaluationPreviousGoal.includes("Failed")) {
+      emoji = "⚠";
     }
 
     console.info(`${emoji} Eval: ${evaluationPreviousGoal}`);
     console.info(`🧠 Memory: ${memory}`);
     console.info(`🎯 Next goal: ${nextGoal}`);
   } else {
-    console.info('No current state in response');
+    console.info("No current state in response");
   }
-  
+
   // Ensure action exists and is an array before iterating
   if (response.action && Array.isArray(response.action)) {
     for (let i = 0; i < response.action.length; i++) {
@@ -69,7 +116,7 @@ function logResponse(response: AgentOutput): void {
       console.info(`🛠️ Action ${i + 1}/${response.action.length}`);
     }
   } else {
-    console.info('No actions in response');
+    console.info("No actions in response");
   }
 }
 
@@ -88,7 +135,7 @@ export class Agent<Context = any> {
   AgentOutputSchema: any = {
     name: "AgentOutput",
     description: "Output model for agent with actions to execute",
-    parameters: AgentOutput.schema
+    parameters: AgentOutput.schema,
   };
   DoneActionModel: any;
   // We need to use 'any' here to avoid type issues when switching between AgentOutput and DoneAgentOutput
@@ -96,7 +143,7 @@ export class Agent<Context = any> {
   DoneAgentOutputSchema: any = {
     name: "DoneAgentOutput",
     description: "Output model for agent when the task is complete",
-    parameters: DoneAgentOutput.schema
+    parameters: DoneAgentOutput.schema,
   };
   availableActions: string;
   toolCallingMethod?: ToolCallingMethod;
@@ -104,16 +151,20 @@ export class Agent<Context = any> {
   injectedBrowserContext: boolean;
   browser?: Browser;
   browserContext: BrowserContext;
-  registerNewStepCallback?: (state: BrowserState, modelOutput: AgentOutput, step: number) => Promise<void>;
+  registerNewStepCallback?: (
+    state: BrowserState,
+    modelOutput: AgentOutput,
+    step: number
+  ) => Promise<void>;
   registerDoneCallback?: (history: AgentHistoryList) => Promise<void>;
   registerExternalAgentStatusRaiseErrorCallback?: () => Promise<boolean>;
   context?: Context;
   private _messageManager: MessageManager;
   initialActions?: ActionModel[];
-  version: string = 'unknown';
-  source: string = 'unknown';
-  chatModelLibrary: string = 'unknown';
-  modelName: string = 'Unknown';
+  version: string = "unknown";
+  source: string = "unknown";
+  chatModelLibrary: string = "unknown";
+  modelName: string = "Unknown";
   plannerModelName?: string = undefined;
 
   /**
@@ -122,82 +173,79 @@ export class Agent<Context = any> {
   constructor(
     task: string,
     llm: BaseChatModel,
-    // Optional parameters
-    browser?: Browser,
-    browserContext?: BrowserContext,
-    controller: Controller<Context> = new Controller<Context>(),
-    // Initial agent run parameters
-    sensitiveData?: Record<string, string>,
-    initialActions?: Record<string, Record<string, any>>[],
-    // Cloud Callbacks
-    registerNewStepCallback?: (state: BrowserState, modelOutput: AgentOutput, step: number) => Promise<void>,
-    registerDoneCallback?: (history: AgentHistoryList) => Promise<void>,
-    registerExternalAgentStatusRaiseErrorCallback?: () => Promise<boolean>,
-    // Agent settings
-    useVision: boolean = true,
-    useVisionForPlanner: boolean = false,
-    saveConversationPath?: string,
-    saveConversationPathEncoding: string = 'utf-8',
-    maxFailures: number = 3,
-    retryDelay: number = 10,
-    overrideSystemMessage?: string,
-    extendSystemMessage?: string,
-    maxInputTokens: number = 128000,
-    validateOutput: boolean = false,
-    messageContext?: string,
-    generateGif: boolean | string = false,
-    availableFilePaths?: string[],
-    includeAttributes: string[] = [
-      'title',
-      'type',
-      'name',
-      'role',
-      'aria-label',
-      'placeholder',
-      'value',
-      'alt',
-      'aria-expanded',
-      'data-date-format',
-    ],
-    maxActionsPerStep: number = 10,
-    toolCallingMethod?: ToolCallingMethod,
-    pageExtractionLlm?: BaseChatModel,
-    plannerLlm?: BaseChatModel,
-    plannerInterval: number = 1, // Run planner every N steps
-    // Inject state
-    injectedAgentState?: AgentState,
-    //
-    context?: Context,
+    options: AgentConstructorOptions<Context> = {}
   ) {
+    // Destructure options
+    const {
+      context = {} as Context,
+      injectedAgentState,
+      plannerInterval = 1,
+      plannerLlm,
+      pageExtractionLlm,
+      toolCallingMethod = "auto",
+      includeAttributes = [
+        "title",
+        "type",
+        "name",
+        "role",
+        "aria-label",
+        "placeholder",
+        "value",
+        "alt",
+        "aria-expanded",
+        "data-date-format",
+      ],
+      maxActionsPerStep = 10,
+      availableFilePaths,
+      generateGif = false,
+      messageContext,
+      validateOutput = false,
+      maxInputTokens = 128000,
+      extendSystemMessage,
+      overrideSystemMessage,
+      retryDelay = 10,
+      maxFailures = 3,
+      saveConversationPathEncoding = "utf-8",
+      saveConversationPath,
+      useVisionForPlanner = false,
+      useVision = true,
+      registerExternalAgentStatusRaiseErrorCallback = async () => false,
+      registerNewStepCallback = async () => Promise.resolve(),
+      registerDoneCallback = async () => Promise.resolve(),
+      initialActions,
+      sensitiveData,
+      controller = new Controller<Context>(),
+      browserContext,
+      browser, // Added from options
+    } = options;
+
     // Set page extraction LLM to main LLM if not provided
-    if (!pageExtractionLlm) {
-      pageExtractionLlm = llm;
-    }
+    const finalPageExtractionLlm = pageExtractionLlm || llm;
 
     // Core components
     this.task = task;
     this.llm = llm;
     this.controller = controller;
-    this.sensitiveData = sensitiveData || {};
+    this.sensitiveData = sensitiveData || {}; // Use sensitiveData from options
 
     this.settings = new AgentSettings();
     this.settings.useVision = useVision;
     this.settings.useVisionForPlanner = useVisionForPlanner;
-    this.settings.saveConversationPath = saveConversationPath || '';
+    this.settings.saveConversationPath = saveConversationPath || "";
     this.settings.saveConversationPathEncoding = saveConversationPathEncoding;
     this.settings.maxFailures = maxFailures;
     this.settings.retryDelay = retryDelay;
-    this.settings.overrideSystemMessage = overrideSystemMessage || '';
-    this.settings.extendSystemMessage = extendSystemMessage || '';
+    this.settings.overrideSystemMessage = overrideSystemMessage || "";
+    this.settings.extendSystemMessage = extendSystemMessage || "";
     this.settings.maxInputTokens = maxInputTokens;
     this.settings.validateOutput = validateOutput;
-    this.settings.messageContext = messageContext || '';
+    this.settings.messageContext = messageContext || "";
     this.settings.generateGif = generateGif;
     this.settings.availableFilePaths = availableFilePaths || [];
     this.settings.includeAttributes = includeAttributes;
     this.settings.maxActionsPerStep = maxActionsPerStep;
-    this.settings.toolCallingMethod = toolCallingMethod || 'auto';
-    this.settings.pageExtractionLlm = pageExtractionLlm || null;
+    this.settings.toolCallingMethod = toolCallingMethod;
+    this.settings.pageExtractionLlm = finalPageExtractionLlm;
     this.settings.plannerLlm = plannerLlm || null;
     this.settings.plannerInterval = plannerInterval;
 
@@ -207,22 +255,52 @@ export class Agent<Context = any> {
     // Action setup
     this._setupActionModels();
     this._setBrowserUseVersionAndSource();
-    this.initialActions = initialActions ? this._convertInitialActions(initialActions) : [];
+    this.initialActions = initialActions
+      ? this._convertInitialActions(initialActions)
+      : [];
 
     // Model setup
     this._setModelNames();
 
-    // For models without tool calling, add available actions to context
-    // Check if getPromptDescription exists on the registry (for tests)
-    if (typeof this.controller.registry.getPromptDescription === 'function') {
-      this.availableActions = this.controller.registry.getPromptDescription();
+    // Browser setup - Updated Logic
+    this.injectedBrowser = browser !== undefined; // Initial check based on options
+    this.injectedBrowserContext = browserContext !== undefined; // Initial check based on options
+
+    if (browserContext) {
+      // Case 1: browserContext provided (takes precedence)
+      this.browserContext = browserContext;
+      // IMPORTANT: Use the browser *from the context*, ignore options.browser
+      this.browser = this.browserContext.browser;
+      // Mark both as injected because context implies external browser
+      this.injectedBrowserContext = true;
+      this.injectedBrowser = true;
+    } else if (browser) {
+      // Case 2: browser provided in options, but no context
+      this.browser = browser;
+      const contextConfig = new BrowserContextConfig(); // Use default config
+      this.browserContext = new BrowserContext(this.browser, contextConfig);
+      this.injectedBrowser = true; // Received browser
+      this.injectedBrowserContext = false; // Created context
     } else {
-      // Default empty description for tests
-      this.availableActions = '';
+      // Case 3: Neither provided in options
+      this.browser = new Browser(); // Create browser
+      const contextConfig = new BrowserContextConfig(); // Use default config
+      this.browserContext = new BrowserContext(this.browser, contextConfig);
+      this.injectedBrowser = false; // Created browser
+      this.injectedBrowserContext = false; // Created context
     }
 
-    this.toolCallingMethod = this._setToolCallingMethod() || 'auto';
-    this.settings.messageContext = this._setMessageContext() || '';
+    // For models without tool calling, add available actions to context
+    if (typeof this.controller.registry.getPromptDescription === "function") {
+      this.availableActions = this.controller.registry.getPromptDescription();
+    } else {
+      this.availableActions = "";
+    }
+
+    // Determine actual tool calling method based on model/settings
+    this.toolCallingMethod = this._setToolCallingMethod() || "auto";
+    // Update message context based on determined tool calling method
+    this.settings.messageContext = this._setMessageContext() || "";
 
     // Initialize message manager with state
     this._messageManager = new MessageManager(
@@ -230,8 +308,8 @@ export class Agent<Context = any> {
       new SystemPrompt(
         this.availableActions,
         this.settings.maxActionsPerStep,
-        overrideSystemMessage,
-        extendSystemMessage
+        this.settings.overrideSystemMessage,
+        this.settings.extendSystemMessage
       ).getSystemMessage(),
       new MessageManagerSettings(
         this.settings.maxInputTokens,
@@ -243,36 +321,19 @@ export class Agent<Context = any> {
       this.state.messageManagerState
     );
 
-    // Browser setup
-    this.injectedBrowser = browser !== undefined;
-    this.injectedBrowserContext = browserContext !== undefined;
-    // Initialize browser with a default if not provided
-    const defaultBrowser = new Browser();
-    this.browser = browser || (browserContext ? defaultBrowser : defaultBrowser);
-    
-    if (browserContext) {
-      this.browserContext = browserContext;
-    } else if (this.browser) {
-      // Create browser context with default config
-      const contextConfig = new BrowserContextConfig();
-      this.browserContext = new BrowserContext(this.browser, contextConfig);
-    } else {
-      this.browser = new Browser();
-      // Create browser context with default config
-      const contextConfig = new BrowserContextConfig();
-      this.browserContext = new BrowserContext(this.browser, contextConfig);
-    }
-
     // Callbacks
-    this.registerNewStepCallback = registerNewStepCallback || (async () => Promise.resolve());
-    this.registerDoneCallback = registerDoneCallback || (async () => Promise.resolve());
-    this.registerExternalAgentStatusRaiseErrorCallback = registerExternalAgentStatusRaiseErrorCallback || (async () => false);
+    this.registerNewStepCallback = registerNewStepCallback;
+    this.registerDoneCallback = registerDoneCallback;
+    this.registerExternalAgentStatusRaiseErrorCallback =
+      registerExternalAgentStatusRaiseErrorCallback;
 
     // Context
-    this.context = context || {} as Context;
+    this.context = context;
 
     if (this.settings.saveConversationPath) {
-      console.info(`Saving conversation to ${this.settings.saveConversationPath}`);
+      console.info(
+        `Saving conversation to ${this.settings.saveConversationPath}`
+      );
     }
   }
 
@@ -280,7 +341,7 @@ export class Agent<Context = any> {
    * Set message context based on tool calling method
    */
   private _setMessageContext(): string | null {
-    if (this.toolCallingMethod === 'raw') {
+    if (this.toolCallingMethod === "raw") {
       if (this.settings.messageContext) {
         this.settings.messageContext += `\n\nAvailable actions: ${this.availableActions}`;
       } else {
@@ -296,8 +357,8 @@ export class Agent<Context = any> {
   private _setBrowserUseVersionAndSource(): void {
     // In TypeScript implementation, we'll just set default values
     // Version tracking would be implemented differently in a TypeScript package
-    this.version = '0.1.0';
-    this.source = 'typescript';
+    this.version = "0.1.0";
+    this.source = "typescript";
   }
 
   /**
@@ -305,23 +366,23 @@ export class Agent<Context = any> {
    */
   private _setModelNames(): void {
     this.chatModelLibrary = this.llm.constructor.name;
-    this.modelName = 'Unknown';
-    
-    if ('modelName' in this.llm) {
+    this.modelName = "Unknown";
+
+    if ("modelName" in this.llm) {
       const model = (this.llm as any).modelName;
-      this.modelName = model || 'Unknown';
-    } else if ('model' in this.llm) {
+      this.modelName = model || "Unknown";
+    } else if ("model" in this.llm) {
       const model = (this.llm as any).model;
-      this.modelName = model || 'Unknown';
+      this.modelName = model || "Unknown";
     }
 
     if (this.settings.plannerLlm) {
-      if ('modelName' in this.settings.plannerLlm) {
+      if ("modelName" in this.settings.plannerLlm) {
         this.plannerModelName = (this.settings.plannerLlm as any).modelName;
-      } else if ('model' in this.settings.plannerLlm) {
+      } else if ("model" in this.settings.plannerLlm) {
         this.plannerModelName = (this.settings.plannerLlm as any).model;
       } else {
-        this.plannerModelName = 'Unknown';
+        this.plannerModelName = "Unknown";
       }
     }
   }
@@ -336,8 +397,10 @@ export class Agent<Context = any> {
     this.AgentOutput = AgentOutput.typeWithCustomActions(this.ActionModel);
 
     // Used to force the done action when max_steps is reached
-    this.DoneActionModel = this.controller.registry.createActionModel(['done']);
-    this.DoneAgentOutput = AgentOutput.typeWithCustomActions(this.DoneActionModel);
+    this.DoneActionModel = this.controller.registry.createActionModel(["done"]);
+    this.DoneAgentOutput = AgentOutput.typeWithCustomActions(
+      this.DoneActionModel
+    );
   }
 
   /**
@@ -345,15 +408,18 @@ export class Agent<Context = any> {
    */
   private _setToolCallingMethod(): ToolCallingMethod | undefined {
     const toolCallingMethod = this.settings.toolCallingMethod;
-    if (toolCallingMethod === 'auto') {
-      if (this.modelName.includes('deepseek-reasoner') || this.modelName.includes('deepseek-r1')) {
-        return 'raw';
-      } else if (this.chatModelLibrary === 'ChatGoogleGenerativeAI') {
+    if (toolCallingMethod === "auto") {
+      if (
+        this.modelName.includes("deepseek-reasoner") ||
+        this.modelName.includes("deepseek-r1")
+      ) {
+        return "raw";
+      } else if (this.chatModelLibrary === "ChatGoogleGenerativeAI") {
         return undefined;
-      } else if (this.chatModelLibrary === 'ChatOpenAI') {
-        return 'function_calling';
-      } else if (this.chatModelLibrary === 'AzureChatOpenAI') {
-        return 'function_calling';
+      } else if (this.chatModelLibrary === "ChatOpenAI") {
+        return "function_calling";
+      } else if (this.chatModelLibrary === "AzureChatOpenAI") {
+        return "function_calling";
       } else {
         return undefined;
       }
@@ -375,12 +441,12 @@ export class Agent<Context = any> {
   private async _raiseIfStoppedOrPaused(): Promise<void> {
     if (this.registerExternalAgentStatusRaiseErrorCallback) {
       if (await this.registerExternalAgentStatusRaiseErrorCallback()) {
-        throw new Error('Interrupted');
+        throw new Error("Interrupted");
       }
     }
 
     if (this.state.stopped || this.state.paused) {
-      throw new Error('Interrupted');
+      throw new Error("Interrupted");
     }
   }
 
@@ -400,10 +466,18 @@ export class Agent<Context = any> {
 
       await this._raiseIfStoppedOrPaused();
 
-      this._messageManager.addStateMessage(state, this.state.lastResult, stepInfo, this.settings.useVision);
+      this._messageManager.addStateMessage(
+        state,
+        this.state.lastResult,
+        stepInfo,
+        this.settings.useVision
+      );
 
       // Run planner at specified intervals if planner is configured
-      if (this.settings.plannerLlm && this.state.nSteps % this.settings.plannerInterval === 0) {
+      if (
+        this.settings.plannerLlm &&
+        this.state.nSteps % this.settings.plannerInterval === 0
+      ) {
         const plan = await this._runPlanner();
         // Add plan before last state message
         this._messageManager.addPlan(plan, -1);
@@ -411,13 +485,18 @@ export class Agent<Context = any> {
 
       if (stepInfo && stepInfo.isLastStep()) {
         // Add last step warning if needed
-        let msg = 'Now comes your last step. Use only the "done" action now. No other actions - so here your action sequence must have length 1.';
-        msg += '\nYou MUST include BOTH of these fields in your done action:';
-        msg += '\n1. text: A detailed summary of everything you found out for the ultimate task';
-        msg += '\n2. success: Set to true if the task is fully finished, or false if not completely finished';
-        msg += '\n\nExample of correct format: {"done": {"text": "Found the information about X. The results show...", "success": true}}';
-        msg += '\n\nBoth fields are REQUIRED - the action will fail if either is missing.';
-        console.info('Last step finishing up');
+        let msg =
+          'Now comes your last step. Use only the "done" action now. No other actions - so here your action sequence must have length 1.';
+        msg += "\nYou MUST include BOTH of these fields in your done action:";
+        msg +=
+          "\n1. text: A detailed summary of everything you found out for the ultimate task";
+        msg +=
+          "\n2. success: Set to true if the task is fully finished, or false if not completely finished";
+        msg +=
+          '\n\nExample of correct format: {"done": {"text": "Found the information about X. The results show...", "success": true}}';
+        msg +=
+          "\n\nBoth fields are REQUIRED - the action will fail if either is missing.";
+        console.info("Last step finishing up");
         this._messageManager.addMessageWithTokens(new HumanMessage(msg));
         this.AgentOutput = this.DoneAgentOutput;
         this.AgentOutputSchema = this.DoneAgentOutputSchema;
@@ -431,12 +510,21 @@ export class Agent<Context = any> {
         this.state.nSteps += 1;
 
         if (this.registerNewStepCallback) {
-          await this.registerNewStepCallback(state, modelOutput, this.state.nSteps);
+          await this.registerNewStepCallback(
+            state,
+            modelOutput,
+            this.state.nSteps
+          );
         }
 
         if (this.settings.saveConversationPath) {
           const target = `${this.settings.saveConversationPath}_${this.state.nSteps}.txt`;
-          saveConversation(inputMessages, modelOutput, target, this.settings.saveConversationPathEncoding);
+          saveConversation(
+            inputMessages,
+            modelOutput,
+            target,
+            this.settings.saveConversationPathEncoding
+          );
         }
 
         this._messageManager.removeLastStateMessage(); // We don't want the whole state in the chat history
@@ -458,32 +546,34 @@ export class Agent<Context = any> {
         const lastResult = result[result.length - 1];
         if (lastResult?.isDone) {
           // Match Python implementation by logging the extracted content
-          console.info(`📄 Result: ${lastResult.extractedContent || 'No content'}`);
+          console.info(
+            `📄 Result: ${lastResult.extractedContent || "No content"}`
+          );
         }
       }
 
       this.state.consecutiveFailures = 0;
-
     } catch (e) {
-      if ((e as Error).message === 'Interrupted') {
-        console.debug('Agent paused');
+      if ((e as Error).message === "Interrupted") {
+        console.debug("Agent paused");
         this.state.lastResult = [
           new ActionResult({
-            error: 'The agent was paused - now continuing actions might need to be repeated',
-            includeInMemory: true
-          })
+            error:
+              "The agent was paused - now continuing actions might need to be repeated",
+            includeInMemory: true,
+          }),
         ];
         return;
       }
-      
+
       result = await this._handleStepError(e as Error);
       this.state.lastResult = result;
     } finally {
       const stepEndTime = Date.now() / 1000;
-      
+
       // Equivalent to Python's telemetry capturing
       // We're not implementing telemetry here as per Python code structure
-      
+
       if (!result) {
         return;
       }
@@ -509,46 +599,64 @@ export class Agent<Context = any> {
   private async _handleStepError(error: Error): Promise<ActionResult[]> {
     const includeTrace = true; // Equivalent to logger.isEnabledFor(logging.DEBUG) in Python
     let errorMsg = AgentError.formatError(error, includeTrace);
-    const prefix = `❌ Result failed ${this.state.consecutiveFailures + 1}/${this.settings.maxFailures} times:\n `;
+    const prefix = `❌ Result failed ${this.state.consecutiveFailures + 1}/${
+      this.settings.maxFailures
+    } times:\n `;
     // In Python: if isinstance(error, (ValidationError, ValueError)):
     // We can't directly check for ValidationError in TypeScript, so we check for common validation errors
-    if (error.name === 'ValidationError' || error.name === 'TypeError' || error.name === 'ValueError' || error.name === 'Error') {
+    if (
+      error.name === "ValidationError" ||
+      error.name === "TypeError" ||
+      error.name === "ValueError" ||
+      error.name === "Error"
+    ) {
       // In Python: logger.error(f'{prefix}{error_msg}')
       console.error(`${prefix}${errorMsg}`);
-      
+
       // In Python: if 'Max token limit reached' in error_msg:
-      if (errorMsg.includes('Max token limit reached') || errorMsg.includes('400 This model\'s maximum context length is 128000 tokens')) {
+      if (
+        errorMsg.includes("Max token limit reached") ||
+        errorMsg.includes(
+          "400 This model's maximum context length is 128000 tokens"
+        )
+      ) {
         // In Python: # cut tokens from history
-        this._messageManager.settings.maxInputTokens = this.settings.maxInputTokens - 500;
+        this._messageManager.settings.maxInputTokens =
+          this.settings.maxInputTokens - 500;
         // In Python: logger.info(f'Cutting tokens from history - new max input tokens: {self._message_manager.settings.max_input_tokens}')
-        console.info(`Cutting tokens from history - new max input tokens: ${this._messageManager.settings.maxInputTokens}`);
+        console.info(
+          `Cutting tokens from history - new max input tokens: ${this._messageManager.settings.maxInputTokens}`
+        );
         // In Python: self._message_manager.cut_messages()
         this._messageManager.cutMessages();
-      } 
+      }
       // In Python: elif 'Could not parse response' in error_msg:
-      else if (errorMsg.includes('Could not parse response')) {
+      else if (errorMsg.includes("Could not parse response")) {
         // In Python: # give model a hint how output should look like
         // In Python: error_msg += '\n\nReturn a valid JSON object with the required fields.'
-        errorMsg += '\n\nReturn a valid JSON object with the required fields.';
+        errorMsg += "\n\nReturn a valid JSON object with the required fields.";
       }
 
       // In Python: self.state.consecutive_failures += 1
       this.state.consecutiveFailures += 1;
-    } 
+    }
     // In Python: else:
     else {
       // In Python: if isinstance(error, RateLimitError) or isinstance(error, ResourceExhausted):
       // Check for rate limit errors (similar to Python's RateLimitError or ResourceExhausted)
-      const isRateLimit = error.name === 'RateLimitError' || 
-                          errorMsg.includes('rate limit') || 
-                          errorMsg.includes('quota') || 
-                          errorMsg.includes('capacity');
-      
+      const isRateLimit =
+        error.name === "RateLimitError" ||
+        errorMsg.includes("rate limit") ||
+        errorMsg.includes("quota") ||
+        errorMsg.includes("capacity");
+
       if (isRateLimit) {
         // In Python: logger.warning(f'{prefix}{error_msg}')
         console.warn(`${prefix}${errorMsg}`);
         // In Python: await asyncio.sleep(self.settings.retry_delay)
-        await new Promise(resolve => setTimeout(resolve, this.settings.retryDelay * 1000));
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.settings.retryDelay * 1000)
+        );
         // In Python: self.state.consecutive_failures += 1
         this.state.consecutiveFailures += 1;
       } else {
@@ -561,10 +669,12 @@ export class Agent<Context = any> {
 
     // In Python: return [ActionResult(error=error_msg, include_in_memory=True)]
     // This is important - the error is included in memory so the agent knows about the failure
-    return [new ActionResult({
-      error: errorMsg,
-      includeInMemory: true
-    })];
+    return [
+      new ActionResult({
+        error: errorMsg,
+        includeInMemory: true,
+      }),
+    ];
   }
 
   /**
@@ -577,36 +687,37 @@ export class Agent<Context = any> {
     metadata?: StepMetadata
   ): void {
     if (!state) {
-      console.warn('Attempted to create history item with undefined state');
+      console.warn("Attempted to create history item with undefined state");
       return;
     }
     if (!result || !Array.isArray(result)) {
-      console.warn('Attempted to create history item with invalid result');
-      result = [new ActionResult({ error: 'Invalid result' })];
+      console.warn("Attempted to create history item with invalid result");
+      result = [new ActionResult({ error: "Invalid result" })];
     }
     // Initialize with a default null element
     // In the Python implementation, the type compatibility is handled automatically
     let interactedElements: any[] = [null];
-    
+
     if (modelOutput) {
       // Get the interacted elements from the model output
       // In the Python implementation, this works seamlessly due to duck typing
-      interactedElements = AgentHistory.getInteractedElement(
-        modelOutput,
-        state.selectorMap || {}
-      ) || [];
+      interactedElements =
+        AgentHistory.getInteractedElement(
+          modelOutput,
+          state.selectorMap || {}
+        ) || [];
     }
 
     // Create a properly typed BrowserStateHistory object
     // The interactedElements need to be cast to the correct DOMHistoryElement type
     // from dom/views.ts which BrowserStateHistory expects
-    
+
     // In the Python implementation, this works seamlessly because both classes have compatible structures
     // In TypeScript, we need to use a type assertion to maintain the same behavior
     // without adding any specialized handling logic not present in the Python code
     const stateHistory = new BrowserStateHistory(
-      state.url || '',
-      state.title || '',
+      state.url || "",
+      state.title || "",
       state.tabs || [],
       // In Python, duck typing allows these compatible types to work together
       // In TypeScript, we need to use a type assertion to maintain the same behavior
@@ -617,7 +728,12 @@ export class Agent<Context = any> {
 
     // Match the AgentHistory constructor parameter order: modelOutput, result, state, metadata
     // We need to ensure the interactedElements are properly typed for BrowserStateHistory
-    const historyItem = new AgentHistory(modelOutput, result, stateHistory, metadata);
+    const historyItem = new AgentHistory(
+      modelOutput,
+      result,
+      stateHistory,
+      metadata
+    );
 
     this.state.history.history.push(historyItem);
   }
@@ -633,10 +749,10 @@ export class Agent<Context = any> {
    */
   private _removeThinkTags(text: string): string {
     // Step 1: Remove well-formed <think>...</think>
-    text = text.replace(this.THINK_TAGS, '');
+    text = text.replace(this.THINK_TAGS, "");
     // Step 2: If there's an unmatched closing tag </think>,
     //         remove everything up to and including that.
-    text = text.replace(this.STRAY_CLOSE_TAG, '');
+    text = text.replace(this.STRAY_CLOSE_TAG, "");
     return text.trim();
   }
 
@@ -644,7 +760,10 @@ export class Agent<Context = any> {
    * Convert input messages to the correct format
    */
   private _convertInputMessages(inputMessages: BaseMessage[]): BaseMessage[] {
-    if (this.modelName === 'deepseek-reasoner' || (this.modelName && this.modelName.includes('deepseek-r1'))) {
+    if (
+      this.modelName === "deepseek-reasoner" ||
+      (this.modelName && this.modelName.includes("deepseek-r1"))
+    ) {
       return convertInputMessages(inputMessages, this.modelName);
     } else {
       return inputMessages;
@@ -656,22 +775,22 @@ export class Agent<Context = any> {
    * This would be expanded in a production environment
    */
   // private _trackStepTelemetry(modelOutput: AgentOutput | null, result: ActionResult[], duration: number): void {
-    // In a production environment, this would send telemetry data to a monitoring system
-    // For now, we'll just log some basic information
+  // In a production environment, this would send telemetry data to a monitoring system
+  // For now, we'll just log some basic information
 
   /**
    * Helper function to trim content for logging
    */
   private _trimContent(content: any, maxLength: number = 500): string {
     if (content === null || content === undefined) {
-      return 'null';
+      return "null";
     }
-    
-    let stringContent = '';
-    
-    if (typeof content === 'string') {
+
+    let stringContent = "";
+
+    if (typeof content === "string") {
       stringContent = content;
-    } else if (typeof content === 'object') {
+    } else if (typeof content === "object") {
       try {
         stringContent = JSON.stringify(content);
       } catch (e) {
@@ -680,12 +799,15 @@ export class Agent<Context = any> {
     } else {
       stringContent = String(content);
     }
-    
+
     if (stringContent.length <= maxLength) {
       return stringContent;
     }
-    
-    return stringContent.substring(0, maxLength) + `... [${stringContent.length - maxLength} more characters]`;
+
+    return (
+      stringContent.substring(0, maxLength) +
+      `... [${stringContent.length - maxLength} more characters]`
+    );
   }
 
   /**
@@ -695,19 +817,19 @@ export class Agent<Context = any> {
   async getNextAction(inputMessages: BaseMessage[]): Promise<AgentOutput> {
     // In Python: input_messages = self._convert_input_messages(input_messages)
     inputMessages = this._convertInputMessages(inputMessages);
-    
+
     let parsed: AgentOutput | null = null;
 
     // In Python: try/except block
     try {
       // In Python: if self.tool_calling_method == 'raw':
-      if (this.toolCallingMethod === 'raw') {
+      if (this.toolCallingMethod === "raw") {
         // In Python: output = self.llm.invoke(input_messages)
         const output = await this.llm.invoke(inputMessages);
-        
+
         // In Python: output.content = self._remove_think_tags(str(output.content))
         const cleanedContent = this._removeThinkTags(String(output.content));
-        
+
         // In Python: try/except block for parsing
         try {
           // In Python: parsed_json = extract_json_from_model_output(output.content)
@@ -716,42 +838,58 @@ export class Agent<Context = any> {
           parsed = new AgentOutput(parsedJson);
         } catch (e) {
           // In Python: logger.warning(f'Failed to parse model output: {output} {str(e)}')
-          console.warn(`Failed to parse model output: ${this._trimContent(output.content)} ${e}`);
+          console.warn(
+            `Failed to parse model output: ${this._trimContent(
+              output.content
+            )} ${e}`
+          );
           // In Python: raise ValueError('Could not parse response.')
-          throw new Error('Could not parse response.');
+          throw new Error("Could not parse response.");
         }
-      } 
+      }
       // In Python: elif self.tool_calling_method is None:
-      else if (this.toolCallingMethod === undefined || this.toolCallingMethod === null) {
+      else if (
+        this.toolCallingMethod === undefined ||
+        this.toolCallingMethod === null
+      ) {
         // In Python: structured_llm = self.llm.with_structured_output(self.AgentOutput, include_raw=True)
-        const structuredLlm = this.llm.withStructuredOutput(this.AgentOutputSchema, { includeRaw: true });
+        const structuredLlm = this.llm.withStructuredOutput(
+          this.AgentOutputSchema,
+          { includeRaw: true }
+        );
         // In Python: response: dict[str, Any] = await structured_llm.ainvoke(input_messages)
-        const response = await structuredLlm.invoke(inputMessages) as any;
+        const response = (await structuredLlm.invoke(inputMessages)) as any;
         // In Python: parsed: AgentOutput | None = response['parsed']
         parsed = response.parsed ? new AgentOutput(response.parsed) : null;
-      } 
+      }
       // In Python: else:
       else {
         // In Python: structured_llm = self.llm.with_structured_output(...)
-        const structuredLlm = this.llm.withStructuredOutput(this.AgentOutputSchema, { 
-          includeRaw: true, 
-          method: this.toolCallingMethod 
-        });
+        const structuredLlm = this.llm.withStructuredOutput(
+          this.AgentOutputSchema,
+          {
+            includeRaw: true,
+            method: this.toolCallingMethod,
+          }
+        );
         // In Python: response = await structured_llm.ainvoke(input_messages)
-        const response = await structuredLlm.invoke(inputMessages) as any;
-        
+        const response = (await structuredLlm.invoke(inputMessages)) as any;
+
         // In Python: parsed = response['parsed']
         parsed = response.parsed ? new AgentOutput(response.parsed) : null;
       }
-      
+
       // In Python: if parsed is None:
       if (parsed === null) {
         // In Python: raise ValueError('Could not parse response.')
-        throw new Error('Could not parse response.');
+        throw new Error("Could not parse response.");
       }
 
       // In Python: if len(parsed.action) > self.settings.max_actions_per_step:
-      if (parsed.action && parsed.action.length > this.settings.maxActionsPerStep) {
+      if (
+        parsed.action &&
+        parsed.action.length > this.settings.maxActionsPerStep
+      ) {
         // In Python: parsed.action = parsed.action[: self.settings.max_actions_per_step]
         parsed.action = parsed.action.slice(0, this.settings.maxActionsPerStep);
       }
@@ -776,7 +914,7 @@ export class Agent<Context = any> {
     checkForNewElements: boolean = true
   ): Promise<ActionResult[]> {
     const results: ActionResult[] = [];
-    
+
     const cachedSelectorMap = await this.browserContext.getSelectorMap();
     // Match Python: cached_path_hashes = set(e.hash.branch_path_hash for e in cached_selector_map.values())
     const cachedPathHashes = new Set<string>();
@@ -787,16 +925,21 @@ export class Agent<Context = any> {
         }
       });
     }
-    
+
     await this.browserContext.removeHighlights();
-    
+
     for (let i = 0; i < actions.length; i++) {
       const action = actions[i];
-      
-      if (action && typeof action.getIndex === 'function' && action.getIndex() !== null && i !== 0) {
+
+      if (
+        action &&
+        typeof action.getIndex === "function" &&
+        action.getIndex() !== null &&
+        i !== 0
+      ) {
         const newState = await this.browserContext.getState();
         const newPathHashes = new Set<string>();
-        
+
         if (newState && newState.selectorMap) {
           Object.values(newState.selectorMap).forEach((element: any) => {
             if (element.hash && element.hash.branchPathHash) {
@@ -804,25 +947,27 @@ export class Agent<Context = any> {
             }
           });
         }
-        
+
         // Match Python: if check_for_new_elements and not new_path_hashes.issubset(cached_path_hashes):
         // Check if newPathHashes is NOT a subset of cachedPathHashes
-        const isSubset = Array.from(newPathHashes).every(hash => cachedPathHashes.has(hash));
+        const isSubset = Array.from(newPathHashes).every((hash) =>
+          cachedPathHashes.has(hash)
+        );
         if (checkForNewElements && !isSubset) {
           // next action requires index but there are new elements on the page
           const msg = `Something new appeared after action ${i} / ${actions.length}`;
           console.info(msg); // logger.info in Python
           const result = new ActionResult({
             extractedContent: msg,
-            includeInMemory: true
+            includeInMemory: true,
           });
           results.push(result);
           break;
         }
       }
-      
+
       await this._raiseIfStoppedOrPaused();
-      
+
       // Match Python's controller.act method exactly
       const result = await this.controller.act(
         action,
@@ -832,48 +977,60 @@ export class Agent<Context = any> {
         this.settings.availableFilePaths || undefined,
         this.context
       );
-      
+
       results.push(result);
-      
+
       console.debug(`Executed action ${i + 1} / ${actions.length}`); // logger.debug in Python
-      
-      if (results[results?.length - 1]?.isDone || results[results?.length - 1]?.error || i === actions.length - 1) {
+
+      if (
+        results[results?.length - 1]?.isDone ||
+        results[results?.length - 1]?.error ||
+        i === actions.length - 1
+      ) {
         break;
       }
-      
+
       // Match Python implementation using config parameter
-      if (this.browserContext.config && this.browserContext.config.waitBetweenActions) {
-        await new Promise(resolve => 
+      if (
+        this.browserContext.config &&
+        this.browserContext.config.waitBetweenActions
+      ) {
+        await new Promise((resolve) =>
           setTimeout(resolve, this.browserContext.config.waitBetweenActions)
         );
       }
       // hash all elements. if it is a subset of cached_state its fine - else break (new elements on page)
     }
-    
+
     return results;
   }
 
   /**
    * Convert dictionary-based actions to ActionModel instances
    */
-  private _convertInitialActions(actions: Record<string, Record<string, any>>[]): ActionModel[] {
+  private _convertInitialActions(
+    actions: Record<string, Record<string, any>>[]
+  ): ActionModel[] {
     const convertedActions: ActionModel[] = [];
-    
+
     for (const actionDict of actions) {
       // Each action_dict should have a single key-value pair
       const actionName = Object.keys(actionDict)[0];
       if (!actionName) {
-        console.warn('Action name is undefined');
+        console.warn("Action name is undefined");
         continue;
       }
       const params = actionDict[actionName];
 
       // Get the parameter model for this action from registry
-      if (!this.controller.registry.registry.actions || !this.controller.registry.registry.actions[actionName]) {
+      if (
+        !this.controller.registry.registry.actions ||
+        !this.controller.registry.registry.actions[actionName]
+      ) {
         console.warn(`Action ${actionName} not found in registry`);
         continue;
       }
-      
+
       const actionInfo = this.controller.registry.registry.actions[actionName];
       const paramModel = actionInfo.paramModel;
 
@@ -882,7 +1039,9 @@ export class Agent<Context = any> {
       Object.assign(validatedParams, params);
 
       // Create ActionModel instance with the validated parameters
-      const actionModel = new this.ActionModel({ [actionName]: validatedParams });
+      const actionModel = new this.ActionModel({
+        [actionName]: validatedParams,
+      });
       convertedActions.push(actionModel);
     }
 
@@ -898,17 +1057,21 @@ export class Agent<Context = any> {
     }
 
     const plannerMessages = [
-      new PlannerPrompt(this.controller.registry.getPromptDescription()).getSystemMessage(),
-      ...this._messageManager.getMessages().slice(1), 
+      new PlannerPrompt(
+        this.controller.registry.getPromptDescription()
+      ).getSystemMessage(),
+      ...this._messageManager.getMessages().slice(1),
     ];
 
     if (!this.settings.useVisionForPlanner && this.settings.useVision) {
-      const lastStateMessage = plannerMessages[plannerMessages.length - 1] as HumanMessage;
-      let newMsg = '';
-      
+      const lastStateMessage = plannerMessages[
+        plannerMessages.length - 1
+      ] as HumanMessage;
+      let newMsg = "";
+
       if (Array.isArray(lastStateMessage.content)) {
         for (const msg of lastStateMessage.content) {
-          if (typeof msg === 'object' && msg.type === 'text') {
+          if (typeof msg === "object" && msg.type === "text") {
             newMsg += msg.text;
           }
         }
@@ -924,14 +1087,18 @@ export class Agent<Context = any> {
     try {
       const response = await this.settings.plannerLlm.invoke(convertedMessages);
       const plan = String(response.content);
-      
-      if (this.plannerModelName && 
-          (this.plannerModelName.includes('deepseek-r1') || 
-           this.plannerModelName.includes('deepseek-reasoner'))) {
+
+      if (
+        this.plannerModelName &&
+        (this.plannerModelName.includes("deepseek-r1") ||
+          this.plannerModelName.includes("deepseek-reasoner"))
+      ) {
         const cleanedPlan = this._removeThinkTags(plan);
         try {
           const planJson = JSON.parse(cleanedPlan);
-          console.info(`Planning Analysis:\n${JSON.stringify(planJson, null, 4)}`);
+          console.info(
+            `Planning Analysis:\n${JSON.stringify(planJson, null, 4)}`
+          );
         } catch (e) {
           console.info(`Planning Analysis:\n${cleanedPlan}`);
         }
@@ -940,7 +1107,9 @@ export class Agent<Context = any> {
       } else {
         try {
           const planJson = JSON.parse(plan);
-          console.info(`Planning Analysis:\n${JSON.stringify(planJson, null, 4)}`);
+          console.info(
+            `Planning Analysis:\n${JSON.stringify(planJson, null, 4)}`
+          );
         } catch (e) {
           console.info(`Planning Analysis:\n${plan}`);
         }
@@ -971,8 +1140,10 @@ export class Agent<Context = any> {
   ): Promise<AgentHistoryList> {
     console.info(`🤖 Starting agent with task: ${this.task}`);
     console.info(`🔧 Model: ${this.modelName}`);
-    console.info(`🧠 Tool calling method: ${this.toolCallingMethod || 'default'}`);
-    
+    console.info(
+      `🧠 Tool calling method: ${this.toolCallingMethod || "default"}`
+    );
+
     try {
       if (!this.injectedBrowser && !this.browser) {
         this.browser = new Browser();
@@ -983,7 +1154,7 @@ export class Agent<Context = any> {
           const defaultConfig = new BrowserContextConfig();
           this.browserContext = new BrowserContext(this.browser, defaultConfig);
         } else {
-          throw new Error('No browser available to create context');
+          throw new Error("No browser available to create context");
         }
       }
 
@@ -997,19 +1168,23 @@ export class Agent<Context = any> {
         const results = await this.multiAct(initialActions, false);
         this.state.lastResult = results;
       } else if (this.initialActions && this.initialActions.length > 0) {
-        console.info(`Executing ${this.initialActions.length} initial actions from constructor`);
+        console.info(
+          `Executing ${this.initialActions.length} initial actions from constructor`
+        );
         const results = await this.multiAct(this.initialActions, false);
         this.state.lastResult = results;
       }
 
       for (let i = 0; i < maxSteps; i++) {
         if (this.state.stopped || this.state.paused) {
-          console.info('Agent stopped or paused');
+          console.info("Agent stopped or paused");
           break;
         }
 
         if (this.state.consecutiveFailures >= this.settings.maxFailures) {
-          console.error(`Too many consecutive failures (${this.state.consecutiveFailures}/${this.settings.maxFailures})`);
+          console.error(
+            `Too many consecutive failures (${this.state.consecutiveFailures}/${this.settings.maxFailures})`
+          );
           break;
         }
 
@@ -1017,12 +1192,12 @@ export class Agent<Context = any> {
         await this.step(stepInfo);
 
         if (this.state.history.isDone()) {
-          console.info('Agent completed task');
+          console.info("Agent completed task");
           break;
         }
 
         if (waitForUserInput) {
-          console.info('Waiting for user input...');
+          console.info("Waiting for user input...");
         }
       }
 
@@ -1031,7 +1206,7 @@ export class Agent<Context = any> {
       }
 
       if (this.settings.generateGif) {
-        console.info('GIF generation would happen here');
+        console.info("GIF generation would happen here");
       }
 
       return this.state.history;
