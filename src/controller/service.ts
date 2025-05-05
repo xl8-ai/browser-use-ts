@@ -1007,7 +1007,23 @@ export class Controller<Context = any> {
           // Remove script, style, and other non-content tags
           // This matches the behavior of Python's markdownify
           // The .remove() method ensures these tags and their contents are completely removed
-          turndownService.remove(['script', 'style', 'meta', 'link', 'noscript']);
+          turndownService.remove([
+            "script",
+            "style",
+            "meta",
+            "link",
+            "noscript",
+            "img",
+          ]);
+  
+          // Remove link URLs, but keep the text
+          turndownService.addRule("plainLink", {
+            filter: "a",
+  
+            replacement(content) {
+              return content; // no Markdown URL, just the text
+            },
+          });
           
           // Convert HTML to markdown
           const content = turndownService.turndown(pageContent);
